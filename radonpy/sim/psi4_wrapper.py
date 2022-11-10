@@ -423,6 +423,88 @@ class Psi4w():
         return energies*const.au2kj, coords # Hartree -> kJ/mol
 
 
+    def localminima_dihedrals_scan(self, dihedral, step=15, **kwargs):
+        """
+        Psi4w.localminima_dihedrals_scan
+
+        Scanning potential energy surface of the dihedral by Psi4 and get optimized local minima dihedrals
+
+        Args:
+            dihedral: Array of index number of atoms in a scanning dihedral angle (list(int*4))
+
+        Optional args:
+            step: step of dihedral angle (degree) values (int)
+
+        Returns:
+            scaned_energy (ndarray(float), kJ/mol)
+            scaned_coord (ndarray(float), angstrom)
+            localminima_energy (ndarray(float), kJ/mol)
+            localminima_coord (ndarray(float), angstrom)    
+            localminima_dihedrals (ndarray(float), degree)
+        """
+
+        dt1 = datetime.datetime.now()
+        utils.radon_print('Psi4 dihedral localminima scan is running...', level=1)
+
+        # 1st dihedral scan
+        work_dir = self.work_dir
+        self.work_dir = os.path.join(work_dir, '1st_scan')
+        self.tmp_dir = self.work_dir
+        os.makedirs(self.work_dir, exist_ok=True)
+        angs = list(range(0, 360, step))
+        scaned_energy, scaned_coord = self.scan(dihedral, values=angs, opt=True, ignore_conv_error=True, **kwargs)
+
+        mins = signal.argrelmin(scaned_energy, order=1, mode='wrap')[0]
+        utils.radon_print('number of found localminima angle canditates: %d' % len(mins), level=1)
+
+        # 2nd opt for each local minima
+        localminima_coord     = np.array([])
+        localminima_energy    = np.array([])
+        localminima_dihedrals = np.array([])
+
+        for ind, step_num in enumerate(mins):
+            self.work_dir = os.path.join(work_dir, 'localminma_opt_%d'%ind)
+            self.tmp_dir = self.work_dir
+            os.makedirs(self.work_dir, exist_ok=True)
+
+            # set coord of local minima of 1st scan as start coord
+            for i, atom in enumerate(self.mol.GetAtoms()):
+                self.mol.GetConformer(0).SetAtomPosition(i, Geom.Point3D(scaned_coord[step_num, i, 0], scaned_coord[step_num, i, 1], scaned_coord[step_num, i, 2]))
+            
+            # run psi4 opt to get fine local minima
+            energy, coord = self.optimize(**kwargs)
+
+            # get dihedral
+            conf = self.mol.GetConformer(0)
+            opt_ang = Chem.rdMolTransforms.GetDihedralDeg(conf, dihedral[0], dihedral[1], dihedral[2], dihedral[3])
+            if opt_ang < 0: opt_ang = 360+opt_ang # make opt_ang 0~360 style
+
+            # add local minima if angle and energy are ok
+            angleOK = False
+            if step_num == 0:
+                # 345 ~ ang ~ 15
+                if angs[-1] <= opt_ang or opt_ang <= angs[1]: angleOK = True
+            elif step_num == len(angs)-1:
+                # 330 ~ ang ~ 360
+                if angs[-2] <= opt_ang or opt_ang <= 360: angleOK = True
+            else:
+                if angs[step_num-1] <= opt_ang and opt_ang <= angs[step_num+1]: angleOK = True
+            
+            if angleOK:
+                localminima_coord     = np.append(localminima_coord, coord)
+                localminima_energy    = np.append(localminima_energy, energy)
+                localminima_dihedrals = np.append(localminima_dihedrals, opt_ang)
+            else:
+                utils.radon_print('Optimized localminimum strcture failed. ang: %f, energy:%f' % (opt_ang, energy), level=2)
+
+        self.work_dir = work_dir
+        self.tmp_dir = self.work_dir
+        dt2 = datetime.datetime.now()
+        utils.radon_print('Normal termination of psi4 dihedral localminima scan. Elapsed time = %s' % str(dt2-dt1), level=1)
+
+        return scaned_energy, scaned_coord, localminima_energy, localminima_coord, localminima_dihedrals
+
+
     def force(self, wfn=True, **kwargs):
         """
         Psi4w.force
